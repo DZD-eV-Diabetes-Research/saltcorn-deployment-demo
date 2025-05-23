@@ -1,0 +1,97 @@
+services:
+  saltcorn-init:
+  # this will just run once on first start and deploy the schema
+    image: saltcorn/saltcorn:${SALTCORN_VERSION}
+    entrypoint: /bin/bash
+    command: >
+      -c '
+      if [ ! -f /data/.saltcorn_initialized ]; then
+        echo "Initializing Saltcorn schema...";
+        saltcorn add-schema -f &&
+        touch /data/.saltcorn_initialized;
+      else
+        echo "Saltcorn schema already initialized.";
+      fi
+      '
+    environment:
+      PGUSER: ${POSTGRES_USER}
+      PGHOST: postgresql
+      PGPORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_USER}
+    volumes:
+      - ${DATADIR}file_store:/data
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      
+    restart: "no"
+
+  saltcorn:
+    # https://wiki.saltcorn.com/view/ShowPage/deploy-with-docker
+    restart: unless-stopped
+    image: saltcorn/saltcorn:${SALTCORN_VERSION}
+    command: serve
+    ports:
+      - 3000:3000
+    environment:
+      SALTCORN_SESSION_SECRET: ${SALTCORN_SESSION_SECRET}
+      #DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgresql/${POSTGRES_USER}
+      PGUSER: ${POSTGRES_USER}
+      PGHOST: postgresql
+      PGPORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_USER}
+      SALTCORN_MULTI_TENANT: false
+      SALTCORN_FILE_STORE: /data
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      saltcorn-init:
+        condition: service_completed_successfully
+    volumes:
+      - ${DATADIR}file_store:/data
+
+
+
+  postgresql:
+    image: postgres:15
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_USER}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_INITDB_ARGS=--lc-collate C.UTF-8 --lc-ctype C --encoding UTF8
+    volumes:
+      - ${DATADIR}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: "pg_isready -h localhost -p 5432 -q -U ${POSTGRES_USER}"
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
+
+  pgbackups:
+    image: prodrigestivill/postgres-backup-local
+    restart: always
+    volumes:
+      - ${DATADIR}/backups:/backups
+    depends_on:
+      - postgresql
+    environment:
+      - POSTGRES_HOST=postgresql
+      - POSTGRES_DB=${POSTGRES_USER}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      #  - POSTGRES_PASSWORD_FILE=/run/secrets/db_password <-- alternative for POSTGRES_PASSWORD (to use with docker secrets)
+      #- POSTGRES_EXTRA_OPTS=-Z6 --schema=public --blobs
+      - SCHEDULE=@daily
+      - BACKUP_KEEP_DAYS=7
+      - BACKUP_KEEP_WEEKS=4
+      - BACKUP_KEEP_MONTHS=6
+      - HEALTHCHECK_PORT=8080
+    labels:
+      - traefik.enable=false
+
+
